@@ -11,18 +11,18 @@ BASE_URL = "https://datadis.es"
 
 
 def authenticate():
-    """Obtiene el token JWT de Datadis."""
+    """Obtiene el token JWT de Datadis (se envía en el body y se recibe como texto)."""
     print("🔐 Autenticando con Datadis...")
     r = requests.post(
         f"{BASE_URL}/nikola-auth/tokens/login",
-        params={"username": USERNAME, "password": PASSWORD},
+        data={"username": USERNAME, "password": PASSWORD},  # ✅ 'data', no 'params'
         timeout=30,
     )
-    if r.status_code != 200:
-        raise RuntimeError(f"Error de autenticación ({r.status_code}): {r.text[:300]}")
-    token = r.json().get("token")
+    r.raise_for_status()  # Lanza excepción si el código HTTP no es 2xx
+
+    token = r.text.strip()  # ✅ El token es texto plano, no JSON
     if not token:
-        raise RuntimeError(f"No se recibió token: {r.text[:300]}")
+        raise RuntimeError(f"Respuesta de login vacía. Código: {r.status_code}")
     print("✅ Autenticación correcta")
     return token
 
@@ -31,7 +31,7 @@ def get_supplies(token):
     """Lista los CUPS asociados a la cuenta."""
     r = requests.get(
         f"{BASE_URL}/api-private/api/get-supplies",
-        headers={"Authorization": f"Bearer {token}"},
+        headers={"Authorization": f"Bearer {token}"},  # ✅ Formato correcto
         timeout=30,
     )
     r.raise_for_status()
@@ -41,7 +41,7 @@ def get_supplies(token):
 
 
 def get_consumption(token, cups, distributor_code, start_date, end_date):
-    """Descarga la curva horaria de consumo y excedentes directamente de la API."""
+    """Descarga la curva horaria de consumo y excedentes."""
     r = requests.get(
         f"{BASE_URL}/api-private/api/get-consumption-data",
         headers={"Authorization": f"Bearer {token}"},
