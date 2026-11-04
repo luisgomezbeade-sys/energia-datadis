@@ -2,40 +2,30 @@ import os
 import sqlite3
 from datetime import datetime, timedelta
 import pandas as pd
+
+# ─── PARCHE DEFINITIVO: saltar la validación estricta del CUPS ───
+# La librería ctr-datadis importa validate_cups directamente en su módulo
+# simple_client, por lo que hay que parchear allí, no en el módulo original.
+import datadis_python.client.v1.simple_client as _simple_client
+_simple_client.validate_cups = lambda cups: cups.upper().strip()
+
 from datadis_python.client.v1.simple_client import SimpleDatadisClientV1
 from datadis_python.exceptions import AuthenticationError, APIError, DatadisError, ValidationError
-
-# ─── PARCHE OPCIONAL (solo si quieres intentar saltar la validación de 2 años) ───
-# import datadis_python.utils.validators as _validators
-# _validators.validate_date_range = lambda *args, **kwargs: args[:2]
 
 USERNAME = os.environ["DATADIS_USER"]
 PASSWORD = os.environ["DATADIS_PASSWORD"]
 
 
-def calcular_rango_maximo_permitido():
+def calcular_rango_fechas():
     """
-    Devuelve (date_from, date_to) en formato 'YYYY/MM' para solicitar
-    el máximo histórico que Datadis permite (últimos 2 años desde hoy).
+    Devuelve un rango de fechas seguro dentro de los últimos 24 meses.
+    Para la primera ejecución, usamos los últimos 12 meses completos.
     """
     hoy = datetime.now()
-    # El límite inferior es hoy menos 2 años. Para evitar que el día exacto
-    # cause problemas, nos situamos un día después del límite.
-    limite_inferior = (hoy - timedelta(days=730)) + timedelta(days=1)
-    # El límite superior es el mes actual (o el mes pasado si hoy es el día 1)
-    limite_superior = hoy if hoy.day > 1 else (hoy.replace(day=1) - timedelta(days=1))
-
-    # Formateamos como 'YYYY/MM'
-    desde = limite_inferior.strftime("%Y/%m")
-    hasta = limite_superior.strftime("%Y/%m")
-
-    # Aseguramos que el mes de inicio no sea anterior al límite real
-    if limite_inferior.month == 12:
-        desde = f"{limite_inferior.year + 1}/01"
-    else:
-        desde = f"{limite_inferior.year}/{limite_inferior.month + 1:02d}"
-
-    return desde, hasta
+    # Últimos 12 meses completos (desde el primer día del mes hace 12 meses)
+    desde = (hoy.replace(day=1) - timedelta(days=365)).replace(day=1)
+    hasta = hoy.replace(day=1) - timedelta(days=1)
+    return desde.strftime("%Y/%m"), hasta.strftime("%Y/%m")
 
 
 def obtener_codigo_distribuidora(cups: str) -> str:
@@ -43,13 +33,13 @@ def obtener_codigo_distribuidora(cups: str) -> str:
     if cups and len(cups) >= 6 and cups.startswith("ES"):
         posible = cups[2:6]
         if posible.isdigit():
-            return str(int(posible))
+            return str(int(posible))  # '0021' -> '21'
     return None
 
 
 def main():
-    date_from, date_to = calcular_rango_maximo_permitido()
-    print(f"📅 Rango de descarga (máximo permitido por Datadis): {date_from} → {date_to}")
+    date_from, date_to = calcular_rango_fechas()
+    print(f"📅 Rango de descarga (últimos 12 meses): {date_from} → {date_to}")
     print("🚀 Iniciando descarga...")
     os.makedirs("data", exist_ok=True)
     archivos_generados = 0
@@ -64,7 +54,7 @@ def main():
             print(f"🔌 {len(supplies)} punto(s) encontrado(s)")
 
             for supply in supplies:
-                cups = supply.cups
+                cups = supply.cups  # ✅ Usamos el CUPS original, sin modificarlo
                 codigo_dist = obtener_codigo_distribuidora(cups)
                 if not codigo_dist:
                     print(f"⚠️ No se pudo extraer el código de distribuidora de {cups}")
@@ -131,4 +121,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
