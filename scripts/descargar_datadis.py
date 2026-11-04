@@ -5,38 +5,41 @@ import pandas as pd
 from datadis_python.client.v1.simple_client import SimpleDatadisClientV1
 from datadis_python.exceptions import AuthenticationError, APIError, DatadisError, ValidationError
 
-# ─── PARCHE: evitar la validación estricta del CUPS ───
-# La librería ctr-datadis exige 20-22 caracteres DESPUÉS de "ES".
-# Tu CUPS tiene 18 después de "ES" (20 en total), pero la API de Datadis sí lo acepta.
-# Sustituimos la función de validación por una que devuelve el CUPS sin cambios.
-import datadis_python.utils.validators as _validators
-_validators.validate_cups = lambda cups: cups.upper().strip()
+# ─── PARCHE OPCIONAL (solo si quieres intentar saltar la validación de 2 años) ───
+# import datadis_python.utils.validators as _validators
+# _validators.validate_date_range = lambda *args, **kwargs: args[:2]
 
 USERNAME = os.environ["DATADIS_USER"]
 PASSWORD = os.environ["DATADIS_PASSWORD"]
-AÑO_SOLICITADO = os.environ.get("DATADIS_YEAR", "").strip()
 
 
-def calcular_rango_fechas(año_solicitado: str):
+def calcular_rango_maximo_permitido():
+    """
+    Devuelve (date_from, date_to) en formato 'YYYY/MM' para solicitar
+    el máximo histórico que Datadis permite (últimos 2 años desde hoy).
+    """
     hoy = datetime.now()
-    limite_inferior = hoy - timedelta(days=730)
+    # El límite inferior es hoy menos 2 años. Para evitar que el día exacto
+    # cause problemas, nos situamos un día después del límite.
+    limite_inferior = (hoy - timedelta(days=730)) + timedelta(days=1)
+    # El límite superior es el mes actual (o el mes pasado si hoy es el día 1)
+    limite_superior = hoy if hoy.day > 1 else (hoy.replace(day=1) - timedelta(days=1))
 
-    if año_solicitado and año_solicitado.isdigit():
-        año = int(año_solicitado)
-        desde = datetime(año, 1, 1)
-        hasta = datetime(año, 12, 31)
-        if desde < limite_inferior:
-            desde = limite_inferior
-        if hasta > hoy:
-            hasta = hoy
+    # Formateamos como 'YYYY/MM'
+    desde = limite_inferior.strftime("%Y/%m")
+    hasta = limite_superior.strftime("%Y/%m")
+
+    # Aseguramos que el mes de inicio no sea anterior al límite real
+    if limite_inferior.month == 12:
+        desde = f"{limite_inferior.year + 1}/01"
     else:
-        desde = (hoy.replace(day=1) - timedelta(days=365)).replace(day=1)
-        hasta = hoy.replace(day=1) - timedelta(days=1)
+        desde = f"{limite_inferior.year}/{limite_inferior.month + 1:02d}"
 
-    return desde.strftime("%Y/%m"), hasta.strftime("%Y/%m")
+    return desde, hasta
 
 
 def obtener_codigo_distribuidora(cups: str) -> str:
+    """Extrae el código de distribuidora de los dígitos 2-4 del CUPS."""
     if cups and len(cups) >= 6 and cups.startswith("ES"):
         posible = cups[2:6]
         if posible.isdigit():
@@ -45,9 +48,9 @@ def obtener_codigo_distribuidora(cups: str) -> str:
 
 
 def main():
-    date_from, date_to = calcular_rango_fechas(AÑO_SOLICITADO)
-    print(f"📅 Rango de descarga: {date_from} → {date_to}")
-    print(f"🚀 Iniciando descarga de Datadis...")
+    date_from, date_to = calcular_rango_maximo_permitido()
+    print(f"📅 Rango de descarga (máximo permitido por Datadis): {date_from} → {date_to}")
+    print("🚀 Iniciando descarga...")
     os.makedirs("data", exist_ok=True)
     archivos_generados = 0
 
@@ -61,7 +64,7 @@ def main():
             print(f"🔌 {len(supplies)} punto(s) encontrado(s)")
 
             for supply in supplies:
-                cups = supply.cups  # ✅ Usamos el CUPS original, sin modificarlo
+                cups = supply.cups
                 codigo_dist = obtener_codigo_distribuidora(cups)
                 if not codigo_dist:
                     print(f"⚠️ No se pudo extraer el código de distribuidora de {cups}")
@@ -78,7 +81,7 @@ def main():
                         date_to=date_to,
                     )
                 except ValidationError as e:
-                    print(f"❌ Error de validación con el CUPS {cups}: {e}")
+                    print(f"❌ Error de validación: {e}")
                     continue
 
                 if not consumption:
@@ -128,3 +131,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
