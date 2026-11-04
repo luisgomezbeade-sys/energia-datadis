@@ -5,32 +5,31 @@ import pandas as pd
 from datadis_python.client.v1.simple_client import SimpleDatadisClientV1
 from datadis_python.exceptions import AuthenticationError, APIError, DatadisError, ValidationError
 
+# ─── PARCHE: evitar la validación estricta del CUPS ───
+# La librería ctr-datadis exige 20-22 caracteres DESPUÉS de "ES".
+# Tu CUPS tiene 18 después de "ES" (20 en total), pero la API de Datadis sí lo acepta.
+# Sustituimos la función de validación por una que devuelve el CUPS sin cambios.
+import datadis_python.utils.validators as _validators
+_validators.validate_cups = lambda cups: cups.upper().strip()
+
 USERNAME = os.environ["DATADIS_USER"]
 PASSWORD = os.environ["DATADIS_PASSWORD"]
-
-# Año opcional; si no se indica, se calcula un rango válido automáticamente
 AÑO_SOLICITADO = os.environ.get("DATADIS_YEAR", "").strip()
 
 
 def calcular_rango_fechas(año_solicitado: str):
-    """
-    Devuelve (date_from, date_to) en formato 'YYYY/MM' garantizando que
-    estén dentro de los últimos 24 meses que permite Datadis.
-    """
     hoy = datetime.now()
-    limite_inferior = hoy - timedelta(days=730)  # ~24 meses
+    limite_inferior = hoy - timedelta(days=730)
 
     if año_solicitado and año_solicitado.isdigit():
         año = int(año_solicitado)
         desde = datetime(año, 1, 1)
         hasta = datetime(año, 12, 31)
-        # Si el año completo no cabe en la ventana de 24 meses, ajustamos
         if desde < limite_inferior:
             desde = limite_inferior
         if hasta > hoy:
             hasta = hoy
     else:
-        # Sin año concreto: usamos los últimos 12 meses completos
         desde = (hoy.replace(day=1) - timedelta(days=365)).replace(day=1)
         hasta = hoy.replace(day=1) - timedelta(days=1)
 
@@ -38,11 +37,10 @@ def calcular_rango_fechas(año_solicitado: str):
 
 
 def obtener_codigo_distribuidora(cups: str) -> str:
-    """Extrae el código de distribuidora de los dígitos 2-4 del CUPS."""
     if cups and len(cups) >= 6 and cups.startswith("ES"):
         posible = cups[2:6]
         if posible.isdigit():
-            return str(int(posible))  # '0021' -> '21'
+            return str(int(posible))
     return None
 
 
