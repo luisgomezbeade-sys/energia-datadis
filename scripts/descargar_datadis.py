@@ -1,122 +1,122 @@
 import os
 import sqlite3
 from datetime import datetime, timedelta
+import requests
 import pandas as pd
 
-# ─── PARCHE DEFINITIVO ───
-# La librería importa 'convert_cups_parameter' en el módulo 'simple_client'.
-# Esa función es la que a su vez llama a 'validate_cups'. Parcheando la función
-# en el módulo donde se usa, evitamos la validación estricta de longitud.
-import datadis_python.client.v1.simple_client as _sc
-_sc.convert_cups_parameter = lambda cups: cups.upper().strip()
-
-from datadis_python.client.v1.simple_client import SimpleDatadisClientV1
-from datadis_python.exceptions import AuthenticationError, APIError, DatadisError, ValidationError
-
+# ─── CONFIGURACIÓN ───
 USERNAME = os.environ["DATADIS_USER"]
 PASSWORD = os.environ["DATADIS_PASSWORD"]
+BASE_URL = "https://datadis.es"
 
 
-def calcular_rango_maximo_permitido():
-    """
-    Devuelve (date_from, date_to) en formato 'YYYY/MM' para pedir
-    el máximo histórico que Datadis permite (últimos 24 meses).
-    """
+def authenticate():
+    """Obtiene el token JWT de Datadis."""
+    print("🔐 Autenticando con Datadis...")
+    r = requests.post(
+        f"{BASE_URL}/nikola-auth/tokens/login",
+        params={"username": USERNAME, "password": PASSWORD},
+        timeout=30,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"Error de autenticación ({r.status_code}): {r.text[:300]}")
+    token = r.json().get("token")
+    if not token:
+        raise RuntimeError(f"No se recibió token: {r.text[:300]}")
+    print("✅ Autenticación correcta")
+    return token
+
+
+def get_supplies(token):
+    """Lista los CUPS asociados a la cuenta."""
+    r = requests.get(
+        f"{BASE_URL}/api-private/api/get-supplies",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30,
+    )
+    r.raise_for_status()
+    supplies = r.json()
+    print(f"🔌 {len(supplies)} punto(s) encontrado(s)")
+    return supplies
+
+
+def get_consumption(token, cups, distributor_code, start_date, end_date):
+    """Descarga la curva horaria de consumo y excedentes directamente de la API."""
+    r = requests.get(
+        f"{BASE_URL}/api-private/api/get-consumption-data",
+        headers={"Authorization": f"Bearer {token}"},
+        params={
+            "cups": cups,
+            "distributorCode": distributor_code,
+            "startDate": start_date,
+            "endDate": end_date,
+            "measurementType": "0",  # 0 = horario
+            "pointType": "5",
+        },
+        timeout=120,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"Error API ({r.status_code}): {r.text[:500]}")
+    return r.json()
+
+
+def calcular_rango_fechas():
+    """Últimos 12 meses completos (seguro dentro del límite de 24 de Datadis)."""
     hoy = datetime.now()
-    limite_inferior = (hoy - timedelta(days=730)) + timedelta(days=1)
-    limite_superior = hoy if hoy.day > 1 else (hoy.replace(day=1) - timedelta(days=1))
-
-    desde = limite_inferior.strftime("%Y/%m")
-    hasta = limite_superior.strftime("%Y/%m")
-    return desde, hasta
+    desde = (hoy.replace(day=1) - timedelta(days=365)).replace(day=1)
+    hasta = hoy.replace(day=1) - timedelta(days=1)
+    return desde.strftime("%Y/%m"), hasta.strftime("%Y/%m")
 
 
 def obtener_codigo_distribuidora(cups: str) -> str:
-    """Extrae el código de distribuidora de los dígitos 2-4 del CUPS."""
+    """Extrae el código de distribuidora de los dígitos 2-6 del CUPS."""
     if cups and len(cups) >= 6 and cups.startswith("ES"):
         posible = cups[2:6]
         if posible.isdigit():
-            return str(int(posible))
+            return str(int(posible))  # '0021' -> '21'
     return None
 
 
 def main():
-    date_from, date_to = calcular_rango_maximo_permitido()
-    print(f"📅 Rango de descarga (máximo permitido por Datadis): {date_from} → {date_to}")
-    print("🚀 Iniciando descarga...")
+    date_from, date_to = calcular_rango_fechas()
+    print(f"📅 Rango de descarga: {date_from} → {date_to}")
+    print("🚀 Iniciando descarga directa contra la API de Datadis...")
     os.makedirs("data", exist_ok=True)
     archivos_generados = 0
 
-    try:
-        with SimpleDatadisClientV1(USERNAME, PASSWORD) as client:
-            print("✅ Autenticación correcta")
-            supplies = client.get_supplies()
-            if not supplies:
-                raise RuntimeError("No hay puntos de suministro en la cuenta")
+    token = authenticate()
+    supplies = get_supplies(token)
 
-            print(f"🔌 {len(supplies)} punto(s) encontrado(s)")
+    for supply in supplies:
+        cups = supply.get("cups")
+        codigo_dist = obtener_codigo_distribuidora(cups)
+        if not codigo_dist:
+            print(f"⚠️ No se pudo extraer distribuidora de {cups}")
+            continue
 
-            for supply in supplies:
-                cups = supply.cups
-                codigo_dist = obtener_codigo_distribuidora(cups)
-                if not codigo_dist:
-                    print(f"⚠️ No se pudo extraer el código de distribuidora de {cups}")
-                    continue
+        print(f"\n--- CUPS: {cups} | Distribuidora: {codigo_dist} ---")
+        print(f"   Solicitando datos de {date_from} a {date_to}...")
 
-                print(f"\n--- CUPS: {cups} | Distribuidora: {codigo_dist} ---")
-                print(f"   Solicitando datos de {date_from} a {date_to}...")
+        data = get_consumption(token, cups, codigo_dist, date_from, date_to)
+        if not data:
+            print("⚠️ Sin datos para este periodo")
+            continue
 
-                try:
-                    consumption = client.get_consumption(
-                        cups=cups,
-                        distributor_code=codigo_dist,
-                        date_from=date_from,
-                        date_to=date_to,
-                    )
-                except ValidationError as e:
-                    print(f"❌ Error de validación: {e}")
-                    continue
+        df = pd.DataFrame(data)
+        print(f"✅ {len(df)} registros horarios descargados")
+        print(f"   Columnas: {list(df.columns)}")
 
-                if not consumption:
-                    print("⚠️ Sin datos para este periodo")
-                    continue
+        csv_path = f"data/datadis_{cups}_{date_from.replace('/', '-')}_{date_to.replace('/', '-')}.csv"
+        df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+        print(f"💾 CSV guardado: {csv_path}")
 
-                rows = [{
-                    "cups": cups,
-                    "fecha": r.date,
-                    "consumo_kwh": r.consumptionKWh,
-                    "excedentes_kwh": getattr(r, "surplusEnergyKWh", None),
-                    "autoconsumo_kwh": getattr(r, "selfConsumptionKWh", None),
-                    "metodo": r.obtainMethod,
-                } for r in consumption]
+        db_path = "data/mi_energia.db"
+        conn = sqlite3.connect(db_path)
+        df.to_sql(f"consumo_{cups}", conn, if_exists="replace", index=False)
+        conn.close()
+        print(f"🗄️  SQLite actualizado: {db_path}")
 
-                df = pd.DataFrame(rows)
-                print(f"✅ {len(df)} registros horarios descargados")
-
-                csv_path = f"data/datadis_{cups}_{date_from.replace('/', '-')}_{date_to.replace('/', '-')}.csv"
-                df.to_csv(csv_path, index=False, encoding="utf-8-sig")
-                print(f"💾 CSV guardado: {csv_path}")
-
-                db_path = "data/mi_energia.db"
-                conn = sqlite3.connect(db_path)
-                df.to_sql(f"consumo_{cups}", conn, if_exists="replace", index=False)
-                conn.close()
-                print(f"🗄️  SQLite actualizado: {db_path}")
-
-                archivos_generados += 1
-
-    except AuthenticationError:
-        print("❌ Error de autenticación: revisa NIF y contraseña")
-        raise
-    except APIError as e:
-        print(f"❌ Error de API: {e}")
-        raise
-    except DatadisError as e:
-        print(f"❌ Error de Datadis: {e}")
-        raise
-    except Exception as e:
-        print(f"❌ Error inesperado: {e}")
-        raise
+        archivos_generados += 1
 
     if archivos_generados == 0:
         raise RuntimeError("No se ha generado ningún archivo. Revisa el log.")
