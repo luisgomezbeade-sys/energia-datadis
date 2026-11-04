@@ -1,0 +1,39 @@
+name: Descarga mensual de Datadis
+
+on:
+  schedule:
+    - cron: '0 3 1 * *'
+  workflow_dispatch:
+
+jobs:
+  descargar:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Ejecutar script de descarga
+        env:
+          DATADIS_USER: ${{ secrets.DATADIS_USER }}
+          DATADIS_PASSWORD: ${{ secrets.DATADIS_PASSWORD }}
+          DATADIS_YEAR: ${{ vars.DATADIS_YEAR }}
+        run: python scripts/descargar_datadis.py
+
+      - name: Commit y push de los datos actualizados
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          git diff --quiet && git diff --staged --quiet || git commit -m "📊 Datos Datadis actualizados $(date +'%Y-%m-%d')"
+          git push
