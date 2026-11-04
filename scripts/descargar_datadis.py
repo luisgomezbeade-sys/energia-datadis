@@ -7,8 +7,9 @@ from datadis_python.exceptions import AuthenticationError, APIError, DatadisErro
 
 USERNAME = os.environ["DATADIS_USER"]
 PASSWORD = os.environ["DATADIS_PASSWORD"]
-AÑO = os.environ.get("DATADIS_YEAR", str(datetime.now().year - 1))
+AÑO = os.environ.get("DATADIS_YEAR") or str(datetime.now().year - 1)
 
+print(f"📅 Año de descarga: {AÑO}")  # Línea de diagnóstico opcional
 
 def obtener_codigo_distribuidora_desde_cups(cups: str) -> str:
     """Extrae el código de distribuidora de los dígitos 2-4 del CUPS.
