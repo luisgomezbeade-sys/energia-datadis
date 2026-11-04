@@ -1,41 +1,55 @@
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
 from datadis_python.client.v1.simple_client import SimpleDatadisClientV1
 from datadis_python.exceptions import AuthenticationError, APIError, DatadisError, ValidationError
 
 USERNAME = os.environ["DATADIS_USER"]
 PASSWORD = os.environ["DATADIS_PASSWORD"]
-AÑO = os.environ.get("DATADIS_YEAR") or str(datetime.now().year - 1)
 
-print(f"📅 Año de descarga: {AÑO}")  # Línea de diagnóstico opcional
+# Año opcional; si no se indica, se calcula un rango válido automáticamente
+AÑO_SOLICITADO = os.environ.get("DATADIS_YEAR", "").strip()
 
-def obtener_codigo_distribuidora_desde_cups(cups: str) -> str:
-    """Extrae el código de distribuidora de los dígitos 2-4 del CUPS.
-    Ej: ES0021... -> '21' (I-DE). ES0022... -> '22' (UFD)."""
+
+def calcular_rango_fechas(año_solicitado: str):
+    """
+    Devuelve (date_from, date_to) en formato 'YYYY/MM' garantizando que
+    estén dentro de los últimos 24 meses que permite Datadis.
+    """
+    hoy = datetime.now()
+    limite_inferior = hoy - timedelta(days=730)  # ~24 meses
+
+    if año_solicitado and año_solicitado.isdigit():
+        año = int(año_solicitado)
+        desde = datetime(año, 1, 1)
+        hasta = datetime(año, 12, 31)
+        # Si el año completo no cabe en la ventana de 24 meses, ajustamos
+        if desde < limite_inferior:
+            desde = limite_inferior
+        if hasta > hoy:
+            hasta = hoy
+    else:
+        # Sin año concreto: usamos los últimos 12 meses completos
+        desde = (hoy.replace(day=1) - timedelta(days=365)).replace(day=1)
+        hasta = hoy.replace(day=1) - timedelta(days=1)
+
+    return desde.strftime("%Y/%m"), hasta.strftime("%Y/%m")
+
+
+def obtener_codigo_distribuidora(cups: str) -> str:
+    """Extrae el código de distribuidora de los dígitos 2-4 del CUPS."""
     if cups and len(cups) >= 6 and cups.startswith("ES"):
-        posible = cups[2:6]  # '0021'
+        posible = cups[2:6]
         if posible.isdigit():
-            return str(int(posible))  # '21'
+            return str(int(posible))  # '0021' -> '21'
     return None
 
 
-def reparar_cups(cups: str) -> str:
-    """Si el CUPS es demasiado corto, prueba a añadir sufijos habituales
-    hasta que cumpla el formato que exige la librería."""
-    if len(cups) >= 22:  # ya es válido (22-24 caracteres en total)
-        return cups
-    for sufijo in ("0F", "1P"):
-        candidato = cups + sufijo
-        if 22 <= len(candidato) <= 24:
-            print(f"🔧 CUPS corto detectado. Se probará con: {candidato}")
-            return candidato
-    return cups  # si nada funciona, devolver el original
-
-
 def main():
-    print(f"🚀 Descargando datos de Datadis para el año {AÑO}...")
+    date_from, date_to = calcular_rango_fechas(AÑO_SOLICITADO)
+    print(f"📅 Rango de descarga: {date_from} → {date_to}")
+    print(f"🚀 Iniciando descarga de Datadis...")
     os.makedirs("data", exist_ok=True)
     archivos_generados = 0
 
@@ -49,53 +63,32 @@ def main():
             print(f"🔌 {len(supplies)} punto(s) encontrado(s)")
 
             for supply in supplies:
-                cups_original = supply.cups
-                codigo_dist = obtener_codigo_distribuidora_desde_cups(cups_original)
+                cups = supply.cups  # ✅ Usamos el CUPS original, sin modificarlo
+                codigo_dist = obtener_codigo_distribuidora(cups)
                 if not codigo_dist:
-                    print(f"⚠️ No se pudo extraer el código de distribuidora de {cups_original}")
+                    print(f"⚠️ No se pudo extraer el código de distribuidora de {cups}")
                     continue
 
-                print(f"\n--- CUPS original: {cups_original} | Distribuidora: {codigo_dist} ---")
-
-                # Reparar el CUPS si es necesario
-                cups_reparado = reparar_cups(cups_original)
+                print(f"\n--- CUPS: {cups} | Distribuidora: {codigo_dist} ---")
+                print(f"   Solicitando datos de {date_from} a {date_to}...")
 
                 try:
                     consumption = client.get_consumption(
-                        cups=cups_reparado,
+                        cups=cups,
                         distributor_code=codigo_dist,
-                        date_from=f"{AÑO}/01",
-                        date_to=f"{AÑO}/12",
+                        date_from=date_from,
+                        date_to=date_to,
                     )
                 except ValidationError as e:
-                    print(f"❌ El CUPS reparado ({cups_reparado}) sigue siendo inválido: {e}")
-                    # Probar el otro sufijo como último recurso
-                    for sufijo in ("1P", "0F"):
-                        candidato = cups_original + sufijo
-                        if candidato == cups_reparado:
-                            continue
-                        print(f"   Reintentando con: {candidato}")
-                        try:
-                            consumption = client.get_consumption(
-                                cups=candidato,
-                                distributor_code=codigo_dist,
-                                date_from=f"{AÑO}/01",
-                                date_to=f"{AÑO}/12",
-                            )
-                            cups_reparado = candidato
-                            break
-                        except ValidationError:
-                            continue
-                    else:
-                        print("   ❌ Ningún sufijo ha funcionado. Se omite este suministro.")
-                        continue
+                    print(f"❌ Error de validación con el CUPS {cups}: {e}")
+                    continue
 
                 if not consumption:
                     print("⚠️ Sin datos para este periodo")
                     continue
 
                 rows = [{
-                    "cups": cups_reparado,
+                    "cups": cups,
                     "fecha": r.date,
                     "consumo_kwh": r.consumptionKWh,
                     "excedentes_kwh": getattr(r, "surplusEnergyKWh", None),
@@ -106,13 +99,13 @@ def main():
                 df = pd.DataFrame(rows)
                 print(f"✅ {len(df)} registros horarios descargados")
 
-                csv_path = f"data/datadis_{cups_reparado}_{AÑO}.csv"
+                csv_path = f"data/datadis_{cups}_{date_from.replace('/', '-')}_{date_to.replace('/', '-')}.csv"
                 df.to_csv(csv_path, index=False, encoding="utf-8-sig")
                 print(f"💾 CSV guardado: {csv_path}")
 
                 db_path = "data/mi_energia.db"
                 conn = sqlite3.connect(db_path)
-                df.to_sql(f"consumo_{cups_reparado}", conn, if_exists="replace", index=False)
+                df.to_sql(f"consumo_{cups}", conn, if_exists="replace", index=False)
                 conn.close()
                 print(f"🗄️  SQLite actualizado: {db_path}")
 
