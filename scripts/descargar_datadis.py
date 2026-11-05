@@ -9,36 +9,32 @@ USERNAME = os.environ["DATADIS_USER"]
 PASSWORD = os.environ["DATADIS_PASSWORD"]
 BASE_URL = "https://datadis.es"
 
-
 def authenticate():
-    """Obtiene el token JWT de Datadis (se envía en el body y se recibe como texto)."""
+    """Obtiene el token JWT. Las credenciales van en el body (data=)."""
     print("🔐 Autenticando con Datadis...")
     r = requests.post(
         f"{BASE_URL}/nikola-auth/tokens/login",
-        data={"username": USERNAME, "password": PASSWORD},  # ✅ 'data', no 'params'
+        data={"username": USERNAME, "password": PASSWORD},
         timeout=30,
     )
-    r.raise_for_status()  # Lanza excepción si el código HTTP no es 2xx
-
-    token = r.text.strip()  # ✅ El token es texto plano, no JSON
+    r.raise_for_status()
+    token = r.text.strip()  # El token es texto plano
     if not token:
-        raise RuntimeError(f"Respuesta de login vacía. Código: {r.status_code}")
+        raise RuntimeError("Respuesta de login vacía.")
     print("✅ Autenticación correcta")
     return token
-
 
 def get_supplies(token):
     """Lista los CUPS asociados a la cuenta."""
     r = requests.get(
         f"{BASE_URL}/api-private/api/get-supplies",
-        headers={"Authorization": f"Bearer {token}"},  # ✅ Formato correcto
+        headers={"Authorization": f"Bearer {token}"},
         timeout=30,
     )
     r.raise_for_status()
     supplies = r.json()
     print(f"🔌 {len(supplies)} punto(s) encontrado(s)")
     return supplies
-
 
 def get_consumption(token, cups, distributor_code, start_date, end_date):
     """Descarga la curva horaria de consumo y excedentes."""
@@ -47,7 +43,7 @@ def get_consumption(token, cups, distributor_code, start_date, end_date):
         headers={"Authorization": f"Bearer {token}"},
         params={
             "cups": cups,
-            "distributorCode": distributor_code,
+            "distributorCode": distributor_code,  # Debe ser de 4 dígitos: '0021'
             "startDate": start_date,
             "endDate": end_date,
             "measurementType": "0",  # 0 = horario
@@ -59,23 +55,20 @@ def get_consumption(token, cups, distributor_code, start_date, end_date):
         raise RuntimeError(f"Error API ({r.status_code}): {r.text[:500]}")
     return r.json()
 
-
 def calcular_rango_fechas():
-    """Últimos 12 meses completos (seguro dentro del límite de 24 de Datadis)."""
+    """Últimos 12 meses completos (seguro dentro del límite de 2 años de Datadis)."""
     hoy = datetime.now()
     desde = (hoy.replace(day=1) - timedelta(days=365)).replace(day=1)
     hasta = hoy.replace(day=1) - timedelta(days=1)
     return desde.strftime("%Y/%m"), hasta.strftime("%Y/%m")
 
-
 def obtener_codigo_distribuidora(cups: str) -> str:
-    """Extrae el código de distribuidora de los dígitos 2-6 del CUPS."""
+    """Extrae el código de distribuidora (4 dígitos) del CUPS."""
     if cups and len(cups) >= 6 and cups.startswith("ES"):
-        posible = cups[2:6]
+        posible = cups[2:6]  # '0021'
         if posible.isdigit():
-            return str(int(posible))  # '0021' -> '21'
+            return posible  # ✅ Devolver '0021' tal cual, sin quitar ceros
     return None
-
 
 def main():
     date_from, date_to = calcular_rango_fechas()
@@ -104,7 +97,6 @@ def main():
 
         df = pd.DataFrame(data)
         print(f"✅ {len(df)} registros horarios descargados")
-        print(f"   Columnas: {list(df.columns)}")
 
         csv_path = f"data/datadis_{cups}_{date_from.replace('/', '-')}_{date_to.replace('/', '-')}.csv"
         df.to_csv(csv_path, index=False, encoding="utf-8-sig")
@@ -120,7 +112,6 @@ def main():
 
     if archivos_generados == 0:
         raise RuntimeError("No se ha generado ningún archivo. Revisa el log.")
-
 
 if __name__ == "__main__":
     main()
