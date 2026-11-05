@@ -1,2 +1,2 @@
-requests>=2.31.0
+datadis-client>=0.3.0
 pandas>=2.0.0
